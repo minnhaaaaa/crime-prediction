@@ -52,6 +52,7 @@ referenced incident and a reviewer explicitly authorized the call.
 | `reka-fact-bundle.schema.json` | deterministic aggregate AI facts |
 | `reka-source-mapping.schema.json` | human-reviewed mapping proposal |
 | `reka-insight.schema.json` | fact-cited aggregate explanation |
+| `reka-candidate-proposals.schema.json` | exact five-field unconfirmed video-model output array |
 
 ## Security invariants
 
@@ -78,6 +79,25 @@ referenced incident and a reviewer explicitly authorized the call.
 - Shared contract changes require review by a teammate outside the author's primary area.
 
 ## Changelog
+
+### 2026-08-31 — exact descriptive Reka candidate observations
+
+- Added the strict `reka-candidate-proposals.schema.json` provider boundary:
+  `offset_seconds`, `category`, concrete `event_type`, neutral bounded
+  `description`, and `confidence`, with no wrappers or extra properties.
+- Advanced `candidate-detection.schema.json` to 1.1.0 so the event type and
+  description survive persistence, the API, and reviewer UI.
+- Short video now uses native Vision Quick Tag description followed by Flash
+  structured output; multimodal Edge remains the fallback with the
+  live-compatible nested video media shape.
+- Candidate event types use a bounded acute-event taxonomy with enforced
+  event/category pairings, complete-sentence descriptions, and authoritative
+  clip-duration bounds.
+- The versioned prompt distinguishes visible harmful force from hand games,
+  rock-paper-scissors, play, sport, dancing, gestures, and non-physical
+  arguments. All output remains unconfirmed until human review.
+- Existing Postgres candidates receive an explicit legacy-unclassified
+  backfill; the migration never invents an event description.
 
 ### 2026-08-30 — unified video input controls
 

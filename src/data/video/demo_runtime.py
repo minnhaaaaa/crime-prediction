@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,7 @@ from src.features.builder import floor_interval
 from src.models.operational import ForecastPolicy, ForecastService
 
 from .broker import PostgresJobBroker
-from .coverage import PostgresCoverageTelemetry, StoreCoverageProvider
+from .coverage import StoreCoverageProvider
 from .errors import VideoPipelineError
 from .postgres import PostgresVideoStore
 from .reka import RekaVisionProvider
@@ -38,7 +38,9 @@ class DemoLocationResolver:
             not (location_ref.startswith(expected) or allowed_demo_public_source)
             or tenant_id not in demo_data.TENANT_CENTRES
         ):
-            raise VideoPipelineError("location_unavailable", "Demo location could not be resolved")
+            raise VideoPipelineError(
+                "location_unavailable", "Demo location could not be resolved"
+            )
         latitude, longitude = demo_data.TENANT_CENTRES[tenant_id]
         return {"latitude": latitude, "longitude": longitude}
 
@@ -60,7 +62,10 @@ def create_demo_runtime() -> DemoRuntime:
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if not dsn:
         raise ValueError("DATABASE_URL is required for the integrated demo")
-    media_root = Path(os.environ.get("RUNTIME_DIR", "/app/data/runtime")).resolve() / "restricted-media"
+    media_root = (
+        Path(os.environ.get("RUNTIME_DIR", "/app/data/runtime")).resolve()
+        / "restricted-media"
+    )
     media_root.mkdir(parents=True, exist_ok=True)
     database = TenantPostgres(dsn)
     ingestion = PostgresIngestionStore(database)
@@ -74,7 +79,9 @@ def create_demo_runtime() -> DemoRuntime:
         base_url=settings.reka_vision_base_url,
         chat_base_url=settings.reka_chat_base_url,
         chat_model=settings.reka_video_model,
+        text_model=settings.reka_model,
         timeout_seconds=settings.reka_timeout_seconds,
+        use_quick_tag_pipeline=True,
     )
     service = VideoPipelineService(
         video_store,
@@ -86,7 +93,7 @@ def create_demo_runtime() -> DemoRuntime:
         max_upload_bytes=64 * 1024 * 1024,
         tenant_quota_bytes=256 * 1024 * 1024,
         max_duration_seconds=10 * 60,
-        prompt_version="live-cctv-candidate-v2",
+        prompt_version=settings.reka_prompt_version,
     )
     forecast_service = ForecastService(
         policy=ForecastPolicy(minimum_recent_support=1.0, minimum_coverage_ratio=0.5)
@@ -110,7 +117,7 @@ class DemoForecastRefresher:
                 "Process a recording before publishing the demo forecast",
             )
         interval = timedelta(hours=6)
-        current = now.astimezone(timezone.utc)
+        current = now.astimezone(UTC)
         target = floor_interval(current, interval) + interval
         config = FeatureBuildConfig(
             tenant_id=tenant_id,

@@ -5,7 +5,7 @@ const DETECTION_ID = "22000000-0000-4000-8000-000000000001";
 const DISPATCH_CASE_ID = "53000000-0000-4000-8000-000000000001";
 
 const candidate = {
-  schema_version: "1.0.0",
+  schema_version: "1.1.0",
   tenant_id: TENANT_ID,
   detection_id: DETECTION_ID,
   source_id: "20000000-0000-4000-8000-000000000001",
@@ -13,6 +13,8 @@ const candidate = {
   occurred_at: "2026-08-30T12:30:00Z",
   received_at: "2026-08-30T12:31:00Z",
   proposed_category: "traffic_safety",
+  event_type: "vehicle_collision",
+  description: "Two vehicles visibly collide.",
   confidence: 0.82,
   detector_version: "reka-demo-v1",
   review_status: "awaiting_review",

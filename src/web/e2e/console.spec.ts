@@ -36,7 +36,7 @@ test("reviewer sees candidates labeled as unconfirmed", async ({ page }) => {
       body: JSON.stringify({
         items: [
           {
-            schema_version: "1.0.0",
+            schema_version: "1.1.0",
             tenant_id: "11111111-1111-4111-8111-111111111111",
             detection_id: "90000000-0000-4000-8000-000000000001",
             source_id: "91000000-0000-4000-8000-000000000001",
@@ -44,6 +44,8 @@ test("reviewer sees candidates labeled as unconfirmed", async ({ page }) => {
             occurred_at: "2026-08-30T12:00:04Z",
             received_at: "2026-08-30T12:00:10Z",
             proposed_category: "traffic_safety",
+            event_type: "vehicle_collision",
+            description: "Two vehicles visibly collide.",
             confidence: 0.81,
             detector_version: "reka-vision:candidate-v2",
             review_status: "awaiting_review",
@@ -92,6 +94,107 @@ test("admin chooses live, uploaded, or simulated video input", async ({ page }) 
   await expect(page.getByRole("button", { name: "Run simulated analysis" })).toBeVisible();
   await expect(page.getByLabel("Synthetic road simulation preview")).toBeVisible();
   await expect(page.getByRole("link", { name: "Sources & upload" })).toHaveCount(0);
+});
+
+test("enabled allowlisted public camera is attributable and starts only a bounded server capture", async ({ page }) => {
+  await page.route("**/ready", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ready",
+        deployment_mode: "production",
+        reka_chat: "verified",
+        reka_vision: "verified",
+        video_service: "durable_connected",
+        queue: "durable_connected",
+        near_live_capture: "allowlisted_hls",
+        forecast_models: "approved_or_historical_fallback",
+        forecast_data: "synthetic_demo",
+      }),
+    });
+  });
+  await page.route("**/v1/demo/live-cctv", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        source_key: "louisiana-dot-i20",
+        name: "I-20 public traffic camera · Louisiana",
+        playback_url: "https://public-camera.invalid/allowlisted.m3u8",
+        attribution: "Louisiana Department of Transportation and Development",
+        status: "live",
+        analysis_mode: "reka_vision",
+        limitations: [
+          "The public feed may be delayed or unavailable at the source.",
+          "Playback is context only; Reka analyzes bounded captured segments.",
+        ],
+      }),
+    });
+  });
+  await page.route("https://public-camera.invalid/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/vnd.apple.mpegurl",
+      body: "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:1\n",
+    });
+  });
+
+  let captureBody: Record<string, unknown> | null = null;
+  let captureIdempotencyKey: string | undefined;
+  await page.route("**/v1/demo/near-live-cctv/captures", async (route) => {
+    captureBody = route.request().postDataJSON() as Record<string, unknown>;
+    captureIdempotencyKey = route.request().headers()["idempotency-key"];
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run_id: "62000000-0000-4000-8000-000000000001",
+        state: "queued",
+        stage: "capture_segment",
+        label: "near-live CCTV segment",
+        source_name: "I-20 public traffic camera · Louisiana",
+        source_attribution: "Louisiana Department of Transportation and Development",
+        capture_seconds: 12,
+        analysis_mode: "reka_vision",
+        created_at: "2026-08-31T00:00:00Z",
+        updated_at: "2026-08-31T00:00:00Z",
+      }),
+    });
+  });
+  await page.route("**/v1/ingestion/runs/62000000-0000-4000-8000-000000000001", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run_id: "62000000-0000-4000-8000-000000000001",
+        state: "running",
+        stage: "capture_segment",
+        label: "near-live CCTV segment",
+        capture_seconds: 12,
+        analysis_mode: "reka_vision",
+        created_at: "2026-08-31T00:00:00Z",
+        updated_at: "2026-08-31T00:00:01Z",
+      }),
+    });
+  });
+
+  await signInAsAdmin(page);
+  await expect(page.getByLabel("Live public camera preview: I-20 public traffic camera · Louisiana")).toBeVisible();
+  await expect(page.getByText("Louisiana Department of Transportation and Development")).toBeVisible();
+  await expect(page.getByLabel("Public camera details")).toContainText("12 seconds");
+  await expect(page.getByLabel("Public camera details")).toContainText("Reka Vision");
+  await page.getByText("Feed limitations").click();
+  await expect(page.getByText(/public feed may be delayed/)).toBeVisible();
+  await expect(page.getByLabel(/stream url/i)).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Analyze next 12 seconds" }).click();
+  await expect.poll(() => captureBody).toEqual({
+    source_key: "louisiana-dot-i20",
+    duration_seconds: 12,
+  });
+  expect(captureIdempotencyKey).toBeTruthy();
+  await expect(page.getByText("run 62000000")).toBeVisible();
 });
 
 test("production-disabled capture and historical fallback are represented honestly", async ({ page }) => {

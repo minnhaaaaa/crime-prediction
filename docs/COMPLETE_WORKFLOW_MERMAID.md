@@ -118,7 +118,7 @@ flowchart TB
         REKAUPLOAD["Reka Vision<br/>upload approved video"]
         REKAINDEX["Reka Vision<br/>asynchronous video indexing"]
         REKAQA["Reka Vision Q&A<br/>versioned non-identifying safety prompt"]
-        SCHEMA["Validate strict candidate schema<br/>timestamp, category, confidence only"]
+        SCHEMA["Validate exact Reka candidate schema<br/>offset, category, event type, description, confidence"]
         CANDIDATE["Postgres restricted candidate<br/>UNCONFIRMED machine proposal"]
         EVIDENCE["Reviewer-authorized evidence endpoint<br/>tenant-scoped MP4, no-store, no S3/Reka ID"]
         REVIEW["Human reviewer<br/>confirm or reject once"]

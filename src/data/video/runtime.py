@@ -53,6 +53,7 @@ class PlatformSettings:
     reka_model: str
     reka_video_model: str
     reka_prompt_version: str
+    reka_timeout_seconds: float
     worker_lease_seconds: int
     max_upload_bytes: int
     restricted_spool_root: Path
@@ -94,8 +95,9 @@ class PlatformSettings:
             reka_video_model=os.getenv("REKA_VIDEO_MODEL", "reka-edge-2603"),
             reka_prompt_version=os.getenv(
                 "REKA_VIDEO_PROMPT_VERSION",
-                os.getenv("REKA_PROMPT_VERSION", "1.0.0"),
+                os.getenv("REKA_PROMPT_VERSION", "1.2.0"),
             ).strip(),
+            reka_timeout_seconds=float(os.getenv("REKA_TIMEOUT_SECONDS", "20")),
             worker_lease_seconds=int(os.getenv("VIDEO_WORKER_LEASE_SECONDS", "120")),
             max_upload_bytes=int(
                 os.getenv("VIDEO_MAX_UPLOAD_BYTES", str(8 * 1024 * 1024))
@@ -116,9 +118,7 @@ class PlatformSettings:
                     f"VIDEO_QUEUE_DLQ_URL_{operation.upper()}", ""
                 ).strip()
                 for operation in ("upload", "index", "analyze", "delete")
-                if os.getenv(
-                    f"VIDEO_QUEUE_DLQ_URL_{operation.upper()}", ""
-                ).strip()
+                if os.getenv(f"VIDEO_QUEUE_DLQ_URL_{operation.upper()}", "").strip()
             },
         )
         settings = cls(**values)
@@ -130,6 +130,8 @@ class PlatformSettings:
             raise ValueError(
                 "REKA_VIDEO_PROMPT_VERSION must be a non-empty, bounded version label"
             )
+        if not 1 <= settings.reka_timeout_seconds <= 120:
+            raise ValueError("REKA_TIMEOUT_SECONDS must be between 1 and 120")
         if not 30 <= settings.worker_lease_seconds <= 43200:
             raise ValueError("VIDEO_WORKER_LEASE_SECONDS must be between 30 and 43200")
         if not 1024 * 1024 <= settings.max_upload_bytes <= 8 * 1024 * 1024:
@@ -205,6 +207,9 @@ def create_platform_runtime(
         base_url=settings.reka_vision_base_url,
         chat_base_url=settings.reka_chat_base_url,
         chat_model=settings.reka_video_model,
+        text_model=settings.reka_model,
+        timeout_seconds=settings.reka_timeout_seconds,
+        use_quick_tag_pipeline=True,
     )
     service = VideoPipelineService(
         video_store,

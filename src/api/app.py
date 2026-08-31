@@ -471,11 +471,17 @@ def create_app(
         raise ValueError("A durable production idempotency store must be injected")
     app.state.audit = audit_log
     app.state.idempotency = idempotency_store
-    first_source = None if production or not seed_demo_fixtures else _load_fixture("camera-source")
+    first_source = (
+        None if production or not seed_demo_fixtures else _load_fixture("camera-source")
+    )
     app.state.sources = (
         {} if first_source is None else {first_source["tenant_id"]: [first_source]}
     )
-    candidate = None if production or not seed_demo_fixtures else _load_fixture("candidate-detection")
+    candidate = (
+        None
+        if production or not seed_demo_fixtures
+        else _load_fixture("candidate-detection")
+    )
     app.state.candidates = (
         {}
         if candidate is None
@@ -499,7 +505,9 @@ def create_app(
                 base_url=active_settings.reka_vision_base_url,
                 chat_base_url=active_settings.reka_chat_base_url,
                 chat_model=active_settings.reka_video_model,
+                text_model=active_settings.reka_model,
                 timeout_seconds=active_settings.reka_timeout_seconds,
+                use_quick_tag_pipeline=True,
             )
             if active_settings.reka_configured
             else FakeRekaVisionProvider(
@@ -507,6 +515,8 @@ def create_app(
                     {
                         "offset_seconds": 3,
                         "category": "traffic_safety",
+                        "event_type": "vehicle_collision",
+                        "description": "Two vehicles visibly collide.",
                         "confidence": 0.58,
                     }
                 ]
@@ -613,9 +623,15 @@ def create_app(
                 if active_settings.reka_configured
                 else "deterministic_fake"
             ),
-            "video_service": "durable_connected" if video_broker is not None else "connected",
-            "queue": "durable_connected" if video_broker is not None else "development_thread",
-            "near_live_capture": "allowlisted_hls" if public_hls_enabled else "disabled",
+            "video_service": "durable_connected"
+            if video_broker is not None
+            else "connected",
+            "queue": "durable_connected"
+            if video_broker is not None
+            else "development_thread",
+            "near_live_capture": "allowlisted_hls"
+            if public_hls_enabled
+            else "disabled",
             "forecast_models": "approved_or_historical_fallback",
             "forecast_data": (
                 "synthetic_demo"
@@ -868,9 +884,7 @@ def create_app(
             run.update(
                 state="running",
                 stage="reka_upload",
-                updated_at=datetime.now(UTC)
-                .isoformat()
-                .replace("+00:00", "Z"),
+                updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
             candidates_found: list[dict[str, Any]] = []
             for poll in range(active_settings.reka_index_max_polls):
@@ -882,9 +896,7 @@ def create_app(
                     break
                 run.update(
                     stage="reka_indexing",
-                    updated_at=datetime.now(UTC)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
+                    updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 )
                 if poll + 1 < active_settings.reka_index_max_polls:
                     time.sleep(active_settings.reka_index_poll_seconds)
@@ -898,18 +910,14 @@ def create_app(
                 state="completed",
                 stage="awaiting_human_review",
                 candidate_count=len(candidates_found),
-                updated_at=datetime.now(UTC)
-                .isoformat()
-                .replace("+00:00", "Z"),
+                updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
         except VideoPipelineError as error:
             run.update(
                 state="failed",
                 stage="failed",
                 error_code=error.code,
-                updated_at=datetime.now(UTC)
-                .isoformat()
-                .replace("+00:00", "Z"),
+                updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
     def enqueue_asset_run(tenant_id: str, asset_id: str, label: str) -> dict[str, Any]:
@@ -1142,9 +1150,7 @@ def create_app(
             run.update(
                 state="running",
                 stage="capturing_hls",
-                updated_at=datetime.now(UTC)
-                .isoformat()
-                .replace("+00:00", "Z"),
+                updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
             source = ensure_demo_hls_source(tenant_id)
             destination = (
@@ -1178,9 +1184,7 @@ def create_app(
                     state="running",
                     stage="reka_upload_queued",
                     durable_run_id=durable["run_id"],
-                    updated_at=datetime.now(UTC)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
+                    updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 )
             else:
                 process_asset_run(run_id, tenant_id, asset["asset_id"])
@@ -1189,9 +1193,7 @@ def create_app(
                 state="failed",
                 stage="failed",
                 error_code=error.code,
-                updated_at=datetime.now(UTC)
-                .isoformat()
-                .replace("+00:00", "Z"),
+                updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
     def capture_simulated_run(run_id: str, tenant_id: str) -> None:
@@ -1234,9 +1236,7 @@ def create_app(
                     state="running",
                     stage="reka_upload_queued",
                     durable_run_id=durable["run_id"],
-                    updated_at=datetime.now(UTC)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
+                    updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 )
             else:
                 process_asset_run(run_id, tenant_id, asset["asset_id"])
@@ -1369,7 +1369,9 @@ def create_app(
     ) -> dict[str, Any]:
         jobs = app.state.video_service.store.list_jobs(ctx.tenant_id, limit=limit)
         candidate_counts: dict[str, int] = {}
-        for candidate_record in app.state.video_service.store.list_candidates(ctx.tenant_id):
+        for candidate_record in app.state.video_service.store.list_candidates(
+            ctx.tenant_id
+        ):
             asset_id = candidate_record["asset_id"]
             candidate_counts[asset_id] = candidate_counts.get(asset_id, 0) + 1
         return {
@@ -1631,9 +1633,7 @@ def create_app(
                 "detection_id": detection_id,
                 "decision": body.decision,
                 "reviewed_by": ctx.principal_id,
-                "reviewed_at": datetime.now(UTC)
-                .isoformat()
-                .replace("+00:00", "Z"),
+                "reviewed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             }
             if body.decision == "confirmed":
                 result["confirmed_category"] = body.confirmed_category
@@ -1664,7 +1664,11 @@ def create_app(
     @app.get("/v1/coverage")
     def coverage(ctx: TenantContext = Depends(require_tenant)) -> dict[str, Any]:
         if durable_mode:
-            return {"items": app.state.video_service.store.list_coverage(ctx.tenant_id, limit=100)}
+            return {
+                "items": app.state.video_service.store.list_coverage(
+                    ctx.tenant_id, limit=100
+                )
+            }
         fixture = _load_fixture("coverage-snapshot")
         fixture["tenant_id"] = ctx.tenant_id
         return {"items": [fixture]}
@@ -1675,7 +1679,11 @@ def create_app(
         ctx: TenantContext = Depends(require_owner),
     ) -> dict[str, Any]:
         if forecast_refresher is None:
-            raise problem(404, "demo_refresh_unavailable", "Integrated demo refresh is unavailable")
+            raise problem(
+                404,
+                "demo_refresh_unavailable",
+                "Integrated demo refresh is unavailable",
+            )
 
         def action() -> dict[str, Any]:
             result = forecast_refresher(ctx.tenant_id, datetime.now(UTC))
@@ -1757,15 +1765,9 @@ def create_app(
 
             def inside_bounds(item: dict[str, Any]) -> bool:
                 latitude, longitude = h3.cell_to_latlng(item["cell_id"])
-                return (
-                    south <= latitude <= north and west <= longitude <= east
-                )
+                return south <= latitude <= north and west <= longitude <= east
 
-            items = [
-                item
-                for item in items
-                if inside_bounds(item)
-            ]
+            items = [item for item in items if inside_bounds(item)]
         total = len(items)
         offset = (page - 1) * page_size
         selected = items[offset : offset + page_size]

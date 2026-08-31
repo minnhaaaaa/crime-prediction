@@ -20,7 +20,12 @@ from src.data.service import _payload_hash
 from src.data.store import utc_now
 
 from .errors import VideoPipelineError
-from .reka import VisionProvider
+from .reka import (
+    CANDIDATE_DESCRIPTION_PATTERN,
+    CANDIDATE_EVENT_CATEGORIES,
+    CANDIDATE_EVENT_TYPES,
+    VisionProvider,
+)
 from .storage import LocalMediaStorage, MediaScanner, MediaStorage, NoOpMediaScanner
 from .store import VideoStore
 
@@ -134,7 +139,7 @@ class VideoPipelineService:
         max_upload_bytes: int = 500 * 1024 * 1024,
         tenant_quota_bytes: int = 2 * 1024 * 1024 * 1024,
         max_duration_seconds: int = 4 * 60 * 60,
-        prompt_version: str = "candidate-v1",
+        prompt_version: str = "1.2.0",
         review_ttl: timedelta = timedelta(days=7),
         media_inspector: MediaInspector | None = None,
         media_storage: MediaStorage | None = None,
@@ -470,10 +475,13 @@ class VideoPipelineService:
                         mapping["reka_video_id"],
                         prompt_version=self.prompt_version,
                         media_path=local_path,
+                        duration_seconds=duration_seconds,
                     )
             else:
                 proposals = self.provider.propose_candidates(
-                    mapping["reka_video_id"], prompt_version=self.prompt_version
+                    mapping["reka_video_id"],
+                    prompt_version=self.prompt_version,
+                    duration_seconds=duration_seconds,
                 )
             if not isinstance(proposals, list) or len(proposals) > 100:
                 raise VideoPipelineError(
@@ -577,8 +585,7 @@ class VideoPipelineService:
                 "reanalysis_in_progress", "A fresh analysis job is already active"
             )
         if any(
-            job["state"] == "completed"
-            and job["created_at"] > failed_job["created_at"]
+            job["state"] == "completed" and job["created_at"] > failed_job["created_at"]
             for job in related
         ):
             raise VideoPipelineError(
@@ -623,9 +630,10 @@ class VideoPipelineService:
             directory = Path(tempfile.mkdtemp(prefix="candidate-evidence-"))
             clip = directory / "evidence.mp4"
             start = max(
-                (_parse_utc(occurred_at, "occurred_at") - _parse_utc(
-                    asset["captured_start"], "captured_start"
-                )).total_seconds()
+                (
+                    _parse_utc(occurred_at, "occurred_at")
+                    - _parse_utc(asset["captured_start"], "captured_start")
+                ).total_seconds()
                 - 4,
                 0,
             )
@@ -706,7 +714,13 @@ class VideoPipelineService:
         *,
         proposal_index: int = 0,
     ) -> tuple[dict[str, Any], str]:
-        required_fields = {"offset_seconds", "category", "confidence"}
+        required_fields = {
+            "offset_seconds",
+            "category",
+            "event_type",
+            "description",
+            "confidence",
+        }
         if not isinstance(proposal, dict):
             raise VideoPipelineError(
                 "reka_output_prohibited",
@@ -736,6 +750,8 @@ class VideoPipelineService:
             )
         offset = proposal["offset_seconds"]
         category = proposal["category"]
+        event_type = proposal["event_type"]
+        description = proposal["description"]
         confidence = proposal["confidence"]
         if (
             isinstance(offset, bool)
@@ -751,10 +767,41 @@ class VideoPipelineService:
                     "invalid_fields": ["offset_seconds"],
                 },
             )
-        if category not in ALLOWED_CATEGORIES:
+        if not isinstance(category, str) or category not in ALLOWED_CATEGORIES:
             raise VideoPipelineError(
                 "reka_output_invalid",
                 "Candidate category is invalid",
+                safe_diagnostics={
+                    "proposal_index": proposal_index,
+                    "invalid_fields": ["category"],
+                },
+            )
+        if not isinstance(event_type, str) or event_type not in CANDIDATE_EVENT_TYPES:
+            raise VideoPipelineError(
+                "reka_output_invalid",
+                "Candidate event type is invalid",
+                safe_diagnostics={
+                    "proposal_index": proposal_index,
+                    "invalid_fields": ["event_type"],
+                },
+            )
+        if (
+            not isinstance(description, str)
+            or description != description.strip()
+            or CANDIDATE_DESCRIPTION_PATTERN.fullmatch(description) is None
+        ):
+            raise VideoPipelineError(
+                "reka_output_invalid",
+                "Candidate description is invalid",
+                safe_diagnostics={
+                    "proposal_index": proposal_index,
+                    "invalid_fields": ["description"],
+                },
+            )
+        if CANDIDATE_EVENT_CATEGORIES[event_type] != category:
+            raise VideoPipelineError(
+                "reka_output_invalid",
+                "Candidate event type and category are inconsistent",
                 safe_diagnostics={
                     "proposal_index": proposal_index,
                     "invalid_fields": ["category"],
@@ -787,7 +834,7 @@ class VideoPipelineService:
                 },
             )
         occurred_text = _utc(occurred)
-        semantic_key = f"{asset['tenant_id']}:{asset['asset_id']}:{remote_id}:{self.prompt_version}:{occurred_text}:{category}"
+        semantic_key = f"{asset['tenant_id']}:{asset['asset_id']}:{remote_id}:{self.prompt_version}:{occurred_text}:{category}:{event_type}"
         detection_id = str(uuid.uuid5(NAMESPACE, semantic_key))
         now = datetime.now(UTC)
         expires = min(
@@ -795,7 +842,7 @@ class VideoPipelineService:
             _parse_utc(asset["retention_until"], "retention_until"),
         )
         candidate = {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "tenant_id": asset["tenant_id"],
             "detection_id": detection_id,
             "source_id": asset["source_id"],
@@ -803,6 +850,8 @@ class VideoPipelineService:
             "occurred_at": occurred_text,
             "received_at": _utc(now),
             "proposed_category": category,
+            "event_type": event_type,
+            "description": description,
             "confidence": float(confidence),
             "detector_version": f"reka-vision:{self.prompt_version}",
             "evidence_ref": f"secret://candidate-evidence/{detection_id}",

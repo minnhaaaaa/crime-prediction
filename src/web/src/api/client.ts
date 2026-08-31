@@ -325,11 +325,11 @@ export const api = {
       token,
       { method: "POST", idempotencyKey },
     ),
-  startNearLiveCapture: (token: string, durationSeconds = 12) =>
+  startNearLiveCapture: (token: string, sourceKey: LiveCctvSource["source_key"], durationSeconds = 12) =>
     request<NearLiveRun>("/v1/demo/near-live-cctv/captures", token, {
       method: "POST",
       body: JSON.stringify({
-        source_key: "louisiana-dot-i20",
+        source_key: sourceKey,
         duration_seconds: durationSeconds,
       }),
       idempotencyKey: newIdempotencyKey(),

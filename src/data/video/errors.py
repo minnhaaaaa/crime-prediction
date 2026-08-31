@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-_CANDIDATE_FIELDS = frozenset({"offset_seconds", "category", "confidence"})
+_CANDIDATE_FIELDS = frozenset(
+    {"offset_seconds", "category", "event_type", "description", "confidence"}
+)
 _FORMAT_STAGES = frozenset(
     {
         "indexed_video_candidate",
@@ -66,7 +68,11 @@ def _validated_safe_diagnostics(value: dict[str, Any] | None) -> dict[str, Any]:
         result["invalid_fields"] = sorted(set(invalid_fields))
     if "unexpected_field_count" in value:
         count = value["unexpected_field_count"]
-        if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= 100:
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 0 <= count <= 100
+        ):
             raise ValueError("unexpected_field_count must be a bounded integer")
         result["unexpected_field_count"] = count
     if "format_stage" in value:

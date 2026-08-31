@@ -58,7 +58,13 @@ def _setup(tmp_path: Path, *, fail_upload: bool = False):
     ingestion = IngestionStore(tmp_path / "state.sqlite3")
     store = VideoStore(ingestion)
     provider = FakeRekaVisionProvider(
-        proposals=[{"offset_seconds": 1, "category": "property", "confidence": 0.8}],
+        proposals=[{
+            "offset_seconds": 1,
+            "category": "property",
+            "event_type": "property_damage",
+            "description": "Property is visibly damaged.",
+            "confidence": 0.8,
+        }],
         fail_operations={"upload"} if fail_upload else set(),
     )
 
@@ -323,7 +329,12 @@ def test_invalid_analysis_is_fail_closed_and_reanalysis_is_fresh(
     tmp_path: Path,
 ) -> None:
     store, provider, service, asset = _setup(tmp_path)
-    provider.proposals = [{"offset_seconds": 1, "category": "property"}]
+    provider.proposals = [{
+        "offset_seconds": 1,
+        "category": "property",
+        "event_type": "property_damage",
+        "description": "Property is visibly damaged.",
+    }]
     broker = DatabaseJobBroker(store)
     upload = store.enqueue(TENANT, asset["asset_id"], "upload")
     broker.publish(JobMessage(TENANT, upload["job_id"], "upload"))
@@ -372,7 +383,13 @@ def test_invalid_analysis_is_fail_closed_and_reanalysis_is_fresh(
     }
 
     provider.proposals = [
-        {"offset_seconds": 1, "category": "property", "confidence": 0.8}
+        {
+            "offset_seconds": 1,
+            "category": "property",
+            "event_type": "property_damage",
+            "description": "Property is visibly damaged.",
+            "confidence": 0.8,
+        }
     ]
     fresh_job = service.request_reanalysis(
         TENANT, failed_job["job_id"], idempotency_key="controlled-reanalysis-1"

@@ -117,6 +117,12 @@ is outside this application's control. Public reachability does not grant a
 general redistribution licence: keep the segment restricted, attribute the
 source, apply the one-day demo retention policy, and do not publish raw footage.
 
+The dedicated AWS hackathon composition enables this one fixed source with
+`PUBLIC_HLS_DEMO_ENABLED=true`. Set the value to `false` to stop new captures.
+The setting does not create a general URL input: the API accepts only the
+literal `louisiana-dot-i20` source key, and the capture adapter resolves that
+key from its server-side HTTPS HLS allowlist before recording a bounded clip.
+
 ## Reka
 
 The copilot selects live Reka Chat when a server-side key is configured and otherwise uses a deterministic provider so the basic map demo runs offline. Phase 2 adds real Reka Vision video management and analysis behind FastAPI.

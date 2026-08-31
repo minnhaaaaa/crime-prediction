@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://crime-hotspot.local/schemas/reka-candidate-proposals.schema.json",
+  "title": "RekaCandidateProposals",
+  "description": "Strict, unconfirmed Reka video observations that require human review before incident promotion.",
+  "type": "array",
+  "maxItems": 25,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["offset_seconds", "category", "event_type", "description", "confidence"],
+    "properties": {
+      "offset_seconds": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Seconds from the beginning of the clip where the visible event begins."
+      },
+      "category": {
+        "enum": ["property", "violence", "public_order", "traffic_safety", "other", "unmapped"]
+      },
+      "event_type": {
+        "type": "string",
+        "enum": ["property_damage", "vandalism", "forced_entry", "physical_fight", "weapon_assault", "crowd_crush", "crowd_disturbance", "vehicle_collision", "vehicle_pedestrian_collision", "road_obstruction", "structural_collapse", "falling_debris", "fire", "explosion", "medical_emergency", "person_fall", "other_acute_hazard"],
+        "description": "A bounded specific visible acute-event label."
+      },
+      "description": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 240,
+        "pattern": "^[^\\r\\n]{1,239}[.!?]$",
+        "description": "One neutral sentence describing only visible evidence, without identity, intent, guilt, or speculation."
+      },
+      "confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Confidence in the visual observation, not the probability that a crime occurred."
+      }
+    }
+  }
+}

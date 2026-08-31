@@ -1,0 +1,9 @@
+[
+  {
+    "offset_seconds": 0,
+    "category": "other",
+    "event_type": "structural_collapse",
+    "description": "A multistorey structure visibly collapses.",
+    "confidence": 0.85
+  }
+]

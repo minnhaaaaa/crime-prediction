@@ -1138,8 +1138,10 @@ code {
 .live-monitor {
   position: relative;
   min-width: 0;
+  min-height: 540px;
   border-right: 1px solid var(--line);
   background: #060304;
+  overflow: hidden;
 }
 
 .live-monitor video {
@@ -1177,6 +1179,64 @@ code {
   background: var(--red);
   box-shadow: 0 0 10px var(--red);
 }
+
+.monitor-label.is-offline i { background: var(--cream-faint); box-shadow: none; }
+
+.preview-state {
+  position: absolute;
+  top: 64px;
+  right: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: rgba(13, 5, 7, 0.82);
+  color: var(--cream-dim);
+  font: 400 11px/1.2 var(--font-body);
+  backdrop-filter: blur(8px);
+}
+
+.preview-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.preview-state-dot.playing { background: #53d784; box-shadow: 0 0 8px rgba(83, 215, 132, 0.65); }
+.preview-state-dot.error { background: var(--red); }
+
+.preview-state button {
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--cream);
+  font: inherit;
+}
+
+.public-source-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  background: var(--bg-2);
+}
+
+.public-source-facts > div { min-width: 0; padding: 12px 14px; border-right: 1px solid var(--line); }
+.public-source-facts > div:last-child { border-right: 0; }
+.public-source-facts span,
+.public-source-facts strong { display: block; }
+.public-source-facts span { margin-bottom: 5px; color: var(--cream-faint); font: 400 10px/1.2 var(--font-body); letter-spacing: 0.04em; text-transform: uppercase; }
+.public-source-facts strong { overflow: hidden; color: var(--cream); font: 400 12px/1.35 var(--font-body); text-overflow: ellipsis; text-transform: capitalize; white-space: nowrap; }
+
+.public-source-limitations { padding: 10px 14px 50px; border-top: 1px solid var(--line); background: var(--bg-2); }
+.public-source-limitations summary { color: var(--cream-dim); font: 400 11px/1.4 var(--font-body); cursor: pointer; }
+.public-source-limitations ul { margin: 8px 0 0; padding-left: 18px; color: var(--cream-faint); font-size: 11px; line-height: 1.5; }
 
 .monitor-footer {
   position: absolute;

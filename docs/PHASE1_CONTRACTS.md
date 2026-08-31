@@ -74,7 +74,8 @@ Recorded upload or tenant-owned live camera
 
 ### Detection and review
 
-- `candidate-detection.schema.json` contains the proposed category, Reka analysis confidence/version, evidence reference, and review state.
+- `candidate-detection.schema.json` 1.1 contains the proposed category, concrete visible `event_type`, bounded neutral Reka `description`, analysis confidence/version, evidence reference, and review state. The description is AI-generated and unconfirmed.
+- `reka-candidate-proposals.schema.json` freezes the exact provider boundary as an array of five-field objects: `offset_seconds`, `category`, `event_type`, `description`, and `confidence`. Wrapper objects and extra fields are rejected.
 - Confidence is Reka analysis confidence, not the probability that a crime occurred.
 - `candidate-review.schema.json` is immutable. A detection receives at most one final decision.
 - Only the `reviewer`, `tenant_admin`, or explicitly audited `platform_operator` role may decide.

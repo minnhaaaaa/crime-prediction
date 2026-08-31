@@ -278,6 +278,14 @@ export default function ReviewView() {
               <dl className="provenance">
                 <dt>Proposed category</dt>
                 <dd>{candidate.proposed_category.replace(/_/g, " ")}</dd>
+                <dt>Observed event</dt>
+                <dd>{candidate.event_type.replace(/_/g, " ")}</dd>
+                <dt>Reka observation</dt>
+                <dd>
+                  {candidate.description}
+                  <br />
+                  <small>AI-generated and unconfirmed; verify against the evidence.</small>
+                </dd>
                 <dt>Occurred at</dt>
                 <dd>{formatUtc(candidate.occurred_at)}</dd>
                 <dt>Detector</dt>

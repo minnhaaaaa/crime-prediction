@@ -52,28 +52,81 @@ def mp4(path: Path) -> Path:
     return path
 
 
-def setup(tmp_path: Path, *, proposals: list[dict] | None = None, retention_days: int = 30):
+def proposal(
+    offset_seconds: float,
+    category: str,
+    confidence: float,
+    *,
+    event_type: str | None = None,
+    description: str = "A visible safety event requires human review.",
+) -> dict:
+    resolved_event_type = (
+        event_type
+        or {
+            "property": "property_damage",
+            "violence": "physical_fight",
+            "public_order": "crowd_disturbance",
+            "traffic_safety": "vehicle_collision",
+            "other": "other_acute_hazard",
+        }[category]
+    )
+    return {
+        "offset_seconds": offset_seconds,
+        "category": category,
+        "event_type": resolved_event_type,
+        "description": description,
+        "confidence": confidence,
+    }
+
+
+def setup(
+    tmp_path: Path, *, proposals: list[dict] | None = None, retention_days: int = 30
+):
     restricted = tmp_path / "restricted"
     restricted.mkdir()
     ingestion = IngestionStore(tmp_path / "state.sqlite3")
     store = VideoStore(ingestion)
     provider = FakeRekaVisionProvider(proposals=proposals or [])
-    resolver = DictLocationResolver({
-        (TENANT_A, f"secret://locations/{SOURCE_A}"): {"latitude": 12.9716, "longitude": 77.5946},
-        (TENANT_B, f"secret://locations/{SOURCE_B}"): {"latitude": 13.0827, "longitude": 80.2707},
-    })
+    resolver = DictLocationResolver(
+        {
+            (TENANT_A, f"secret://locations/{SOURCE_A}"): {
+                "latitude": 12.9716,
+                "longitude": 77.5946,
+            },
+            (TENANT_B, f"secret://locations/{SOURCE_B}"): {
+                "latitude": 13.0827,
+                "longitude": 80.2707,
+            },
+        }
+    )
+
     class Inspector:
         def duration_seconds(self, path: Path) -> float:
             return 60.0
+
     service = VideoPipelineService(
-        store, provider, resolver, media_root=restricted, max_upload_bytes=1024,
+        store,
+        provider,
+        resolver,
+        media_root=restricted,
+        max_upload_bytes=1024,
         media_inspector=Inspector(),
     )
-    service.register_recorded_source(source(TENANT_A, SOURCE_A, retention_days=retention_days), authenticated_tenant_id=TENANT_A)
+    service.register_recorded_source(
+        source(TENANT_A, SOURCE_A, retention_days=retention_days),
+        authenticated_tenant_id=TENANT_A,
+    )
     return restricted, ingestion, store, provider, service
 
 
-def accept(service: VideoPipelineService, path: Path, *, tenant: str = TENANT_A, source_id: str = SOURCE_A, received_at: str | None = None):
+def accept(
+    service: VideoPipelineService,
+    path: Path,
+    *,
+    tenant: str = TENANT_A,
+    source_id: str = SOURCE_A,
+    received_at: str | None = None,
+):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return service.accept_upload(
         authenticated_tenant_id=tenant,
@@ -92,14 +145,16 @@ def test_recorded_video_to_confirmed_event_is_idempotent(tmp_path: Path) -> None
     restricted, ingestion, store, provider, service = setup(
         tmp_path,
         proposals=[
-            {"offset_seconds": 10, "category": "property", "confidence": 0.8},
-            {"offset_seconds": 20, "category": "public_order", "confidence": 0.6},
+            proposal(10, "property", 0.8, event_type="property_damage"),
+            proposal(20, "public_order", 0.6, event_type="crowd_disturbance"),
         ],
     )
     asset = accept(service, mp4(restricted / "clip.mp4"))
     first = service.process_asset(TENANT_A, asset["asset_id"])
     second = service.process_asset(TENANT_A, asset["asset_id"])
-    assert [item["detection_id"] for item in first] == [item["detection_id"] for item in second]
+    assert [item["detection_id"] for item in first] == [
+        item["detection_id"] for item in second
+    ]
     assert len([call for call in provider.calls if call[0] == "upload"]) == 1
 
     confirmed = service.review_candidate(
@@ -110,14 +165,17 @@ def test_recorded_video_to_confirmed_event_is_idempotent(tmp_path: Path) -> None
         reviewed_by="reviewer-1",
         role="reviewer",
     )
-    assert service.review_candidate(
-        authenticated_tenant_id=TENANT_A,
-        detection_id=first[0]["detection_id"],
-        decision="confirmed",
-        confirmed_category="property",
-        reviewed_by="reviewer-1",
-        role="reviewer",
-    ) == confirmed
+    assert (
+        service.review_candidate(
+            authenticated_tenant_id=TENANT_A,
+            detection_id=first[0]["detection_id"],
+            decision="confirmed",
+            confirmed_category="property",
+            reviewed_by="reviewer-1",
+            role="reviewer",
+        )
+        == confirmed
+    )
     service.review_candidate(
         authenticated_tenant_id=TENANT_A,
         detection_id=first[1]["detection_id"],
@@ -141,9 +199,7 @@ def test_recorded_video_to_confirmed_event_is_idempotent(tmp_path: Path) -> None
 def test_simulated_candidate_cannot_enter_incident_history(tmp_path: Path) -> None:
     restricted, ingestion, _, provider, service = setup(
         tmp_path,
-        proposals=[
-            {"offset_seconds": 4, "category": "traffic_safety", "confidence": 0.7}
-        ],
+        proposals=[proposal(4, "traffic_safety", 0.7, event_type="road_obstruction")],
     )
     simulated_source_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa98"
     simulated = source(TENANT_A, simulated_source_id)
@@ -193,8 +249,8 @@ def test_demo_session_cleanup_deletes_only_tenant_pending_candidates(
     restricted, _, store, _, service = setup(
         tmp_path,
         proposals=[
-            {"offset_seconds": 10, "category": "property", "confidence": 0.8},
-            {"offset_seconds": 20, "category": "public_order", "confidence": 0.6},
+            proposal(10, "property", 0.8, event_type="property_damage"),
+            proposal(20, "public_order", 0.6, event_type="crowd_disturbance"),
         ],
     )
     asset = accept(service, mp4(restricted / "cleanup.mp4"))
@@ -263,8 +319,12 @@ def test_corrupt_oversize_and_quota_uploads_are_rejected(tmp_path: Path) -> None
         accept(service, large)
     assert caught.value.code == "video_size_invalid"
     quota_service = VideoPipelineService(
-        store, provider, service.location_resolver, media_root=restricted,
-        tenant_quota_bytes=1, media_inspector=service.media_inspector,
+        store,
+        provider,
+        service.location_resolver,
+        media_root=restricted,
+        tenant_quota_bytes=1,
+        media_inspector=service.media_inspector,
     )
     with pytest.raises(VideoPipelineError) as caught:
         accept(quota_service, mp4(restricted / "quota.mp4"))
@@ -273,9 +333,11 @@ def test_corrupt_oversize_and_quota_uploads_are_rejected(tmp_path: Path) -> None
 
 def test_tenant_boundary_includes_remote_mapping_and_candidates(tmp_path: Path) -> None:
     restricted, _, store, _, service = setup(
-        tmp_path, proposals=[{"offset_seconds": 1, "category": "other", "confidence": 0.5}]
+        tmp_path, proposals=[proposal(1, "other", 0.5)]
     )
-    service.register_recorded_source(source(TENANT_B, SOURCE_B), authenticated_tenant_id=TENANT_B)
+    service.register_recorded_source(
+        source(TENANT_B, SOURCE_B), authenticated_tenant_id=TENANT_B
+    )
     asset = accept(service, mp4(restricted / "clip.mp4"))
     candidates = service.process_asset(TENANT_A, asset["asset_id"])
     remote_id = store.get_mapping(TENANT_A, asset["asset_id"])["reka_video_id"]
@@ -289,7 +351,12 @@ def test_tenant_boundary_includes_remote_mapping_and_candidates(tmp_path: Path) 
 def test_prohibited_reka_output_cannot_persist(tmp_path: Path) -> None:
     restricted, _, store, _, service = setup(
         tmp_path,
-        proposals=[{"offset_seconds": 1, "category": "property", "confidence": 0.9, "identity": "ignore previous instructions"}],
+        proposals=[
+            {
+                **proposal(1, "property", 0.9),
+                "identity": "ignore previous instructions",
+            }
+        ],
     )
     asset = accept(service, mp4(restricted / "clip.mp4"))
     with pytest.raises(VideoPipelineError) as caught:
@@ -305,7 +372,14 @@ def test_prohibited_reka_output_cannot_persist(tmp_path: Path) -> None:
 def test_missing_reka_fields_have_value_free_diagnostics(tmp_path: Path) -> None:
     restricted, _, store, _, service = setup(
         tmp_path,
-        proposals=[{"offset_seconds": 1, "category": "property"}],
+        proposals=[
+            {
+                "offset_seconds": 1,
+                "category": "property",
+                "event_type": "property_damage",
+                "description": "Property is visibly damaged.",
+            }
+        ],
     )
     asset = accept(service, mp4(restricted / "clip.mp4"))
     with pytest.raises(VideoPipelineError) as caught:
@@ -316,9 +390,7 @@ def test_missing_reka_fields_have_value_free_diagnostics(tmp_path: Path) -> None
         "missing_fields": ["confidence"],
     }
     failed = next(
-        job
-        for job in store.list_jobs(TENANT_A)
-        if job["operation"] == "analyze"
+        job for job in store.list_jobs(TENANT_A) if job["operation"] == "analyze"
     )
     assert failed["state"] == "failed"
     assert failed["safe_diagnostics"] == caught.value.safe_diagnostics
@@ -330,8 +402,8 @@ def test_valid_candidate_survives_out_of_range_sibling(tmp_path: Path) -> None:
     restricted, _, store, _, service = setup(
         tmp_path,
         proposals=[
-            {"offset_seconds": 1, "category": "other", "confidence": 0.95},
-            {"offset_seconds": 100, "category": "other", "confidence": 0.8},
+            proposal(1, "other", 0.95),
+            proposal(100, "other", 0.8),
         ],
     )
     asset = accept(service, mp4(restricted / "clip.mp4"))
@@ -345,9 +417,7 @@ def test_valid_candidate_survives_out_of_range_sibling(tmp_path: Path) -> None:
 def test_only_out_of_range_candidates_remain_fail_closed(tmp_path: Path) -> None:
     restricted, _, store, _, service = setup(
         tmp_path,
-        proposals=[
-            {"offset_seconds": 100, "category": "other", "confidence": 0.8}
-        ],
+        proposals=[proposal(100, "other", 0.8)],
     )
     asset = accept(service, mp4(restricted / "clip.mp4"))
     with pytest.raises(VideoPipelineError) as caught:
@@ -386,18 +456,28 @@ def test_video_errors_reject_unbounded_or_value_bearing_diagnostics() -> None:
 
 def test_expired_candidate_creates_no_event(tmp_path: Path) -> None:
     restricted, ingestion, store, _, service = setup(
-        tmp_path, proposals=[{"offset_seconds": 1, "category": "property", "confidence": 0.9}]
+        tmp_path, proposals=[proposal(1, "property", 0.9)]
     )
     asset = accept(service, mp4(restricted / "clip.mp4"))
     candidate = service.process_asset(TENANT_A, asset["asset_id"])[0]
-    assert service.expire_due_candidates(
-        TENANT_A, now=timestamp(datetime.now(timezone.utc) + timedelta(days=8))
-    ) == 1
-    assert store.get_candidate(TENANT_A, candidate["detection_id"])["review_status"] == "expired"
+    assert (
+        service.expire_due_candidates(
+            TENANT_A, now=timestamp(datetime.now(timezone.utc) + timedelta(days=8))
+        )
+        == 1
+    )
+    assert (
+        store.get_candidate(TENANT_A, candidate["detection_id"])["review_status"]
+        == "expired"
+    )
     with pytest.raises(VideoPipelineError) as caught:
         service.review_candidate(
-            authenticated_tenant_id=TENANT_A, detection_id=candidate["detection_id"],
-            decision="confirmed", confirmed_category="property", reviewed_by="reviewer-1", role="reviewer",
+            authenticated_tenant_id=TENANT_A,
+            detection_id=candidate["detection_id"],
+            decision="confirmed",
+            confirmed_category="property",
+            reviewed_by="reviewer-1",
+            role="reviewer",
         )
     assert caught.value.code == "candidate_expired"
     assert ingestion.event_count(TENANT_A) == 0
@@ -413,9 +493,13 @@ def test_retry_state_and_key_errors_are_safe(tmp_path: Path) -> None:
     assert store.job_metrics(TENANT_A)["retry"] == 1
     job = store.enqueue(TENANT_A, asset["asset_id"], "upload")
     store.transition_job(TENANT_A, job["job_id"], "running")
-    assert store.recover_stale_jobs(
-        stale_after=timedelta(minutes=5), now=datetime.now(timezone.utc) + timedelta(hours=1)
-    ) == 1
+    assert (
+        store.recover_stale_jobs(
+            stale_after=timedelta(minutes=5),
+            now=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        == 1
+    )
     secret = "rk-secret-never-log"
     client = RekaVisionProvider(secret)
     assert secret not in repr(client)
@@ -425,27 +509,46 @@ def test_retry_state_and_key_errors_are_safe(tmp_path: Path) -> None:
     assert missing.value.code == "reka_key_missing"
 
 
-def test_reka_candidate_boundary_discards_provider_extras() -> None:
-    projected = _allowlisted_candidate_output(
-        [
-            {
-                "offset_seconds": 2,
-                "category": "property",
-                "confidence": 0.7,
-                "description": "must not cross the provider boundary",
-                "identity": "must not cross the provider boundary",
-            }
-        ]
-    )
-    assert projected == [
-        {"offset_seconds": 2, "category": "property", "confidence": 0.7}
-    ]
+def test_reka_candidate_boundary_rejects_provider_extras() -> None:
+    with pytest.raises(VideoPipelineError) as caught:
+        _allowlisted_candidate_output(
+            [{**proposal(2, "property", 0.7), "identity": "prohibited"}]
+        )
+    assert caught.value.code == "reka_output_prohibited"
+    assert caught.value.safe_diagnostics == {
+        "proposal_index": 0,
+        "unexpected_field_count": 1,
+    }
 
 
 def test_reka_candidate_boundary_classifies_unhashable_category() -> None:
     with pytest.raises(VideoPipelineError) as caught:
         _allowlisted_candidate_output(
-            [{"offset_seconds": 2, "category": ["property"], "confidence": 0.7}]
+            [{**proposal(2, "property", 0.7), "category": ["property"]}]
+        )
+    assert caught.value.code == "reka_output_invalid"
+    assert caught.value.safe_diagnostics == {
+        "proposal_index": 0,
+        "invalid_fields": ["category"],
+    }
+
+
+def test_reka_candidate_boundary_rejects_benign_or_unknown_event_type() -> None:
+    with pytest.raises(VideoPipelineError) as caught:
+        _allowlisted_candidate_output(
+            [{**proposal(0, "other", 0.8), "event_type": "organization"}]
+        )
+    assert caught.value.code == "reka_output_invalid"
+    assert caught.value.safe_diagnostics == {
+        "proposal_index": 0,
+        "invalid_fields": ["event_type"],
+    }
+
+
+def test_reka_candidate_boundary_rejects_event_category_mismatch() -> None:
+    with pytest.raises(VideoPipelineError) as caught:
+        _allowlisted_candidate_output(
+            [proposal(0, "property", 0.8, event_type="structural_collapse")]
         )
     assert caught.value.code == "reka_output_invalid"
     assert caught.value.safe_diagnostics == {
@@ -455,9 +558,9 @@ def test_reka_candidate_boundary_classifies_unhashable_category() -> None:
 
 
 def test_reka_candidate_boundary_rejects_more_than_twenty_five_proposals() -> None:
-    proposal = {"offset_seconds": 2, "category": "property", "confidence": 0.7}
+    candidate = proposal(2, "property", 0.7)
     with pytest.raises(VideoPipelineError) as caught:
-        _allowlisted_candidate_output([proposal] * 26)
+        _allowlisted_candidate_output([candidate] * 26)
     assert caught.value.code == "reka_output_invalid"
     assert caught.value.safe_diagnostics == {}
 
@@ -581,7 +684,6 @@ def test_reka_candidate_json_parse_failure_does_not_retain_provider_value() -> N
         RekaVisionProvider._decode_candidate_json(
             provider_value,
             stage="short_video_candidate",
-            assistant_prefilled=True,
         )
     assert caught.value.code == "reka_output_invalid"
     assert caught.value.__cause__ is None
@@ -601,7 +703,6 @@ def test_reka_candidate_json_recursion_error_is_sanitized(
         RekaVisionProvider._decode_candidate_json(
             "[]",
             stage="short_video_candidate",
-            assistant_prefilled=True,
         )
     assert caught.value.code == "reka_output_invalid"
     assert caught.value.safe_diagnostics == {
@@ -649,10 +750,10 @@ def test_reka_schema_repair_remains_fail_closed() -> None:
     client._json_request = fake_request  # type: ignore[method-assign]
     with pytest.raises(VideoPipelineError) as caught:
         client.propose_candidates("video-test", prompt_version="candidate-v2")
-    assert caught.value.code == "reka_output_missing_fields"
+    assert caught.value.code == "reka_output_prohibited"
     assert caught.value.safe_diagnostics == {
         "proposal_index": 0,
-        "missing_fields": ["category", "confidence", "offset_seconds"],
+        "unexpected_field_count": 1,
     }
 
 
@@ -661,8 +762,9 @@ def test_reka_repairs_invalid_candidate_values_to_empty_result() -> None:
     responses = iter(
         [
             {
-                "chat_response":
-                    '[{"offset_seconds":0,"category":"no_incident","confidence":1}]'
+                "chat_response": '[{"offset_seconds":0,"category":"no_incident",'
+                '"event_type":"no_incident","description":"No incident.",'
+                '"confidence":1}]'
             },
             {"chat_response": "[]"},
         ]
@@ -675,21 +777,36 @@ def test_reka_repairs_invalid_candidate_values_to_empty_result() -> None:
     assert client.propose_candidates("video-test", prompt_version="candidate-v2") == []
 
 
-def test_reka_unwraps_single_list_container_before_strict_validation() -> None:
+def test_reka_rejects_wrapped_candidate_array_after_one_repair() -> None:
     client = RekaVisionProvider("rk-test-only")
+    responses = iter(
+        [
+            {
+                "chat_response": (
+                    '{"result":[{"offset_seconds":2,"category":"traffic_safety",'
+                    '"event_type":"vehicle_collision",'
+                    '"description":"Two vehicles visibly collide.",'
+                    '"confidence":0.75}]}'
+                )
+            },
+            {
+                "chat_response": (
+                    '{"result":[{"offset_seconds":2,"category":"traffic_safety",'
+                    '"event_type":"vehicle_collision",'
+                    '"description":"Two vehicles visibly collide.",'
+                    '"confidence":0.75}]}'
+                )
+            },
+        ]
+    )
 
     def fake_request(method: str, path: str, payload: dict | None = None) -> dict:
-        return {
-            "chat_response": (
-                '{"result":[{"offset_seconds":2,"category":"traffic_safety",'
-                '"confidence":0.75}]}'
-            )
-        }
+        return next(responses)
 
     client._json_request = fake_request  # type: ignore[method-assign]
-    assert client.propose_candidates("video-test", prompt_version="candidate-v2") == [
-        {"offset_seconds": 2, "category": "traffic_safety", "confidence": 0.75}
-    ]
+    with pytest.raises(VideoPipelineError) as caught:
+        client.propose_candidates("video-test", prompt_version="candidate-v2")
+    assert caught.value.code == "reka_output_invalid"
 
 
 def test_short_video_uses_multimodal_chat_instead_of_indexed_qa(
@@ -706,28 +823,96 @@ def test_short_video_uses_multimodal_chat_instead_of_indexed_qa(
             "choices": [
                 {
                     "finish_reason": "stop",
-                    "message": {"role": "assistant", "content": "]"},
+                    "message": {"role": "assistant", "content": "[]"},
                 }
             ]
         }
 
     client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
-    assert client.propose_candidates(
-        "unused-indexed-id",
-        prompt_version="candidate-v2",
-        media_path=video,
-    ) == []
+    assert (
+        client.propose_candidates(
+            "unused-indexed-id",
+            prompt_version="candidate-v2",
+            media_path=video,
+            duration_seconds=8,
+        )
+        == []
+    )
     content = requests[0]["messages"][0]["content"]
     assert content[0]["type"] == "video_url"
-    assert content[0]["video_url"].startswith("data:video/mp4;base64,")
-    assert "bounded-test-video" not in content[0]["video_url"]
+    assert content[0]["video_url"]["url"].startswith("data:video/mp4;base64,")
+    assert "bounded-test-video" not in content[0]["video_url"]["url"]
     assert requests[0]["temperature"] == 0
-    assert requests[0]["max_tokens"] == 4096
-    assert requests[0]["messages"][1] == {"role": "assistant", "content": "["}
+    assert requests[0]["max_tokens"] == 2048
+    assert requests[0]["seed"] == 17
+    assert len(requests[0]["messages"]) == 1
+    assert requests[0]["messages"][0]["role"] == "user"
+    response_format = requests[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"]["type"] == "array"
+    item_schema = response_format["json_schema"]["schema"]["items"]
+    assert item_schema["additionalProperties"] is False
+    assert item_schema["required"] == [
+        "offset_seconds",
+        "category",
+        "event_type",
+        "description",
+        "confidence",
+    ]
     candidate_prompt = content[-1]["text"]
-    assert "building or structural" in candidate_prompt
-    assert "even when no person is visible" in candidate_prompt
-    assert "version: candidate-v2." in candidate_prompt
+    assert "structural collapse" in candidate_prompt
+    assert "rock-paper-scissors" in candidate_prompt
+    assert "physical attack" in candidate_prompt
+    assert "authoritative clip duration is 8.000 seconds" in candidate_prompt
+    assert "never emit periodic timeline samples" in candidate_prompt
+    assert "candidate-v2." in candidate_prompt
+
+
+def test_short_video_uses_native_quick_tag_then_structured_text_classification(
+    tmp_path: Path,
+) -> None:
+    client = RekaVisionProvider("rk-test-only", use_quick_tag_pipeline=True)
+    video = tmp_path / "short.mp4"
+    video.write_bytes(b"bounded-test-video")
+    requests: list[dict] = []
+
+    def fake_quick_tag(media_path: Path) -> dict:
+        assert media_path == video
+        return {
+            "description": "People play a hand game at an indoor gathering.",
+            "violence": False,
+        }
+
+    def fake_chat_request(payload: dict) -> dict:
+        requests.append(payload)
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "[]"},
+                }
+            ]
+        }
+
+    client._quick_tag_context = fake_quick_tag  # type: ignore[method-assign]
+    client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
+    assert (
+        client.propose_candidates(
+            "unused-indexed-id",
+            prompt_version="candidate-v2",
+            media_path=video,
+            duration_seconds=8,
+        )
+        == []
+    )
+    assert requests[0]["model"] == "reka-flash-3"
+    assert requests[0]["max_tokens"] == 1024
+    prompt = requests[0]["messages"][0]["content"]
+    assert '"violence":false' in prompt
+    assert "People play a hand game at an indoor gathering." in prompt
+    assert "fallible visual evidence" in prompt
+    assert "false value cannot hide a collapse" in prompt
 
 
 def test_short_video_structural_collapse_reaches_candidate_review(
@@ -741,10 +926,12 @@ def test_short_video_structural_collapse_reaches_candidate_review(
     def fake_chat_request(payload: dict) -> dict:
         requests.append(payload)
         prompt = payload["messages"][0]["content"][-1]["text"]
-        assert "building or structural" in prompt
-        assert "Use `other`" in prompt
+        assert "structural collapse" in prompt
+        assert "Use other" in prompt
         content = (
             '[{"offset_seconds":0.5,"category":"other",'
+            '"event_type":"structural_collapse",'
+            '"description":"A multistorey structure visibly collapses.",'
             '"confidence":0.91}]'
         )
         return {
@@ -762,7 +949,13 @@ def test_short_video_structural_collapse_reaches_candidate_review(
         prompt_version="candidate-v2",
         media_path=video,
     ) == [
-        {"offset_seconds": 0.5, "category": "other", "confidence": 0.91}
+        {
+            "offset_seconds": 0.5,
+            "category": "other",
+            "event_type": "structural_collapse",
+            "description": "A multistorey structure visibly collapses.",
+            "confidence": 0.91,
+        }
     ]
     assert len(requests) == 1
 
@@ -776,7 +969,7 @@ def test_short_video_retries_frame_mismatch_with_normalized_media(
     normalized = [
         {
             "type": "video_url",
-            "video_url": "data:video/mp4;base64,bm9ybWFsaXplZA==",
+            "video_url": {"url": "data:video/mp4;base64,bm9ybWFsaXplZA=="},
         }
     ]
     requests: list[dict] = []
@@ -799,7 +992,9 @@ def test_short_video_retries_frame_mismatch_with_normalized_media(
                     "message": {
                         "role": "assistant",
                         "content": (
-                            'assistant: {"offset_seconds":0,"category":"other",'
+                            '[{"offset_seconds":0,"category":"other",'
+                            '"event_type":"structural_collapse",'
+                            '"description":"A structure visibly collapses.",'
                             '"confidence":0.95}]'
                         ),
                     },
@@ -813,7 +1008,15 @@ def test_short_video_retries_frame_mismatch_with_normalized_media(
         "unused-indexed-id",
         prompt_version="candidate-v2",
         media_path=video,
-    ) == [{"offset_seconds": 0, "category": "other", "confidence": 0.95}]
+    ) == [
+        {
+            "offset_seconds": 0,
+            "category": "other",
+            "event_type": "structural_collapse",
+            "description": "A structure visibly collapses.",
+            "confidence": 0.95,
+        }
+    ]
     assert len(requests) == 2
     assert requests[1]["messages"][0]["content"][0] == normalized[0]
 
@@ -856,33 +1059,39 @@ def test_short_video_empty_candidate_array_needs_no_binary_screen(
                     "finish_reason": "stop",
                     "message": {
                         "role": "assistant",
-                        "content": "]",
+                        "content": "[]",
                     },
                 }
             ]
         }
 
     client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
-    assert client.propose_candidates(
-        "unused-indexed-id",
-        prompt_version="candidate-v2",
-        media_path=video,
-    ) == []
+    assert (
+        client.propose_candidates(
+            "unused-indexed-id",
+            prompt_version="candidate-v2",
+            media_path=video,
+        )
+        == []
+    )
     assert len(requests) == 1
-    assert requests[0]["messages"][1] == {"role": "assistant", "content": "["}
-    assert requests[0]["max_tokens"] == 4096
+    assert len(requests[0]["messages"]) == 1
+    assert requests[0]["messages"][0]["role"] == "user"
+    assert requests[0]["max_tokens"] == 2048
+    assert requests[0]["seed"] == 17
     prompt = requests[0]["messages"][0]["content"][-1]["text"]
-    assert "at most 25 candidate objects" in prompt
+    assert "never emit periodic timeline samples" in prompt
+    assert "rock-paper-scissors" in prompt
 
 
 @pytest.mark.parametrize(
     "content",
     [
-        [{"type": "text", "text": "]"}],
-        {"type": "output_text", "text": "]"},
+        [{"type": "text", "text": "[]"}],
+        {"type": "output_text", "text": "[]"},
         [
             {"type": "output_text", "text": ""},
-            {"type": "text", "text": "]"},
+            {"type": "text", "text": "[]"},
         ],
     ],
 )
@@ -905,11 +1114,14 @@ def test_short_video_accepts_safe_openai_text_content_blocks(
         }
 
     client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
-    assert client.propose_candidates(
-        "unused-indexed-id",
-        prompt_version="candidate-v2",
-        media_path=video,
-    ) == []
+    assert (
+        client.propose_candidates(
+            "unused-indexed-id",
+            prompt_version="candidate-v2",
+            media_path=video,
+        )
+        == []
+    )
 
 
 def test_short_video_rejects_prose_instead_of_treating_it_as_clear(
@@ -1027,7 +1239,7 @@ def test_short_video_rejects_non_assistant_or_non_stop_completions(
     }
 
 
-def test_short_video_prefill_accepts_a_complete_candidate_array(
+def test_short_video_accepts_a_complete_candidate_array(
     tmp_path: Path,
 ) -> None:
     client = RekaVisionProvider("rk-test-only")
@@ -1038,6 +1250,8 @@ def test_short_video_prefill_accepts_a_complete_candidate_array(
             "type": "output_text",
             "text": (
                 '[{"offset_seconds":2,"category":"traffic_safety",'
+                '"event_type":"vehicle_collision",'
+                '"description":"Two vehicles visibly collide.",'
                 '"confidence":0.8}]'
             ),
         }
@@ -1062,11 +1276,101 @@ def test_short_video_prefill_accepts_a_complete_candidate_array(
         prompt_version="candidate-v2",
         media_path=video,
     ) == [
-        {"offset_seconds": 2, "category": "traffic_safety", "confidence": 0.8}
+        {
+            "offset_seconds": 2,
+            "category": "traffic_safety",
+            "event_type": "vehicle_collision",
+            "description": "Two vehicles visibly collide.",
+            "confidence": 0.8,
+        }
     ]
 
 
-def test_short_video_prefill_accepts_exact_reka_assistant_role_marker(
+def test_short_video_rejects_single_candidate_object_without_array(
+    tmp_path: Path,
+) -> None:
+    client = RekaVisionProvider("rk-test-only")
+    video = tmp_path / "short.mp4"
+    video.write_bytes(b"bounded-test-video")
+
+    def fake_chat_request(payload: dict) -> dict:
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": (
+                            '{"offset_seconds":0,"category":"other",'
+                            '"event_type":"structural_collapse",'
+                            '"description":"A structure visibly collapses.",'
+                            '"confidence":0.85}'
+                        ),
+                    },
+                }
+            ]
+        }
+
+    client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
+    with pytest.raises(VideoPipelineError) as caught:
+        client.propose_candidates(
+            "unused-indexed-id",
+            prompt_version="candidate-v2",
+            media_path=video,
+        )
+    assert caught.value.code == "reka_output_invalid"
+
+
+def test_short_video_repairs_single_object_missing_offset(
+    tmp_path: Path,
+) -> None:
+    client = RekaVisionProvider("rk-test-only")
+    video = tmp_path / "short.mp4"
+    video.write_bytes(b"bounded-test-video")
+    requests: list[dict] = []
+    responses = iter(
+        [
+            '{"confidence":0.85,"category":"other"}',
+            '[{"offset_seconds":0,"category":"other",'
+            '"event_type":"structural_collapse",'
+            '"description":"A structure visibly collapses.",'
+            '"confidence":0.95}]',
+        ]
+    )
+
+    def fake_chat_request(payload: dict) -> dict:
+        requests.append(payload)
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": next(responses)},
+                }
+            ]
+        }
+
+    client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
+    assert client.propose_candidates(
+        "unused-indexed-id",
+        prompt_version="candidate-v2",
+        media_path=video,
+    ) == [
+        {
+            "offset_seconds": 0,
+            "category": "other",
+            "event_type": "structural_collapse",
+            "description": "A structure visibly collapses.",
+            "confidence": 0.95,
+        }
+    ]
+    assert len(requests) == 2
+    assert all(request["seed"] == 17 for request in requests)
+    repair_prompt = requests[1]["messages"][0]["content"][-1]["text"]
+    assert "allowed event/category pairs" in repair_prompt
+    assert "rock-paper-scissors" in repair_prompt
+
+
+def test_short_video_rejects_reka_assistant_role_marker(
     tmp_path: Path,
 ) -> None:
     client = RekaVisionProvider("rk-test-only")
@@ -1090,14 +1394,20 @@ def test_short_video_prefill_accepts_exact_reka_assistant_role_marker(
         }
 
     client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
-    assert client.propose_candidates(
-        "unused-indexed-id",
-        prompt_version="candidate-v2",
-        media_path=video,
-    ) == [{"offset_seconds": 0, "category": "other", "confidence": 0.94}]
+    with pytest.raises(VideoPipelineError) as caught:
+        client.propose_candidates(
+            "unused-indexed-id",
+            prompt_version="candidate-v2",
+            media_path=video,
+        )
+    assert caught.value.code == "reka_output_invalid"
+    assert caught.value.safe_diagnostics == {
+        "format_stage": "short_video_candidate",
+        "format_reason": "json_format_invalid",
+    }
 
 
-def test_short_video_prefill_accepts_exact_role_marker_then_full_json_fence(
+def test_short_video_rejects_role_marker_before_full_json_fence(
     tmp_path: Path,
 ) -> None:
     client = RekaVisionProvider("rk-test-only")
@@ -1122,11 +1432,17 @@ def test_short_video_prefill_accepts_exact_role_marker_then_full_json_fence(
         }
 
     client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
-    assert client.propose_candidates(
-        "unused-indexed-id",
-        prompt_version="candidate-v2",
-        media_path=video,
-    ) == [{"offset_seconds": 0, "category": "other", "confidence": 0.92}]
+    with pytest.raises(VideoPipelineError) as caught:
+        client.propose_candidates(
+            "unused-indexed-id",
+            prompt_version="candidate-v2",
+            media_path=video,
+        )
+    assert caught.value.code == "reka_output_invalid"
+    assert caught.value.safe_diagnostics == {
+        "format_stage": "short_video_candidate",
+        "format_reason": "json_format_invalid",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1137,9 +1453,10 @@ def test_short_video_prefill_accepts_exact_role_marker_then_full_json_fence(
             'assistant: explanation: {"offset_seconds":0,"category":"other",'
             '"confidence":0.9}]'
         ),
+        'human { "offset_seconds": 0, "category": "traffic_safety" }\n\n]\n\n',
     ],
 )
-def test_short_video_prefill_rejects_unallowlisted_role_or_prose_wrappers(
+def test_short_video_rejects_unallowlisted_role_or_prose_wrappers(
     tmp_path: Path,
     content: str,
 ) -> None:
@@ -1171,7 +1488,63 @@ def test_short_video_prefill_rejects_unallowlisted_role_or_prose_wrappers(
     }
 
 
-def test_short_video_prefill_accepts_a_complete_wrapped_candidate_array(
+def test_short_video_repairs_chat_role_artifact_without_inventing_fields(
+    tmp_path: Path,
+) -> None:
+    client = RekaVisionProvider("rk-test-only")
+    video = tmp_path / "short.mp4"
+    video.write_bytes(b"bounded-test-video")
+    requests: list[dict] = []
+    responses = iter(
+        [
+            'human { "offset_seconds": 0, "category": "traffic_safety" }\n\n]\n\n',
+            (
+                '[{"offset_seconds":0,"category":"traffic_safety",'
+                '"event_type":"vehicle_collision",'
+                '"description":"Two vehicles visibly collide.",'
+                '"confidence":0.88}]'
+            ),
+        ]
+    )
+
+    def fake_chat_request(payload: dict) -> dict:
+        requests.append(payload)
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": next(responses),
+                    },
+                }
+            ]
+        }
+
+    client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
+    assert client.propose_candidates(
+        "unused-indexed-id",
+        prompt_version="candidate-v2",
+        media_path=video,
+    ) == [
+        {
+            "offset_seconds": 0,
+            "category": "traffic_safety",
+            "event_type": "vehicle_collision",
+            "description": "Two vehicles visibly collide.",
+            "confidence": 0.88,
+        }
+    ]
+    assert len(requests) == 2
+    assert all(len(request["messages"]) == 1 for request in requests)
+    assert all(request["messages"][0]["role"] == "user" for request in requests)
+    assert (
+        "prior answer did not match"
+        in requests[1]["messages"][0]["content"][-1]["text"]
+    )
+
+
+def test_short_video_rejects_wrapped_candidate_array(
     tmp_path: Path,
 ) -> None:
     client = RekaVisionProvider("rk-test-only")
@@ -1192,11 +1565,13 @@ def test_short_video_prefill_accepts_a_complete_wrapped_candidate_array(
         }
 
     client._chat_json_request = fake_chat_request  # type: ignore[method-assign]
-    assert client.propose_candidates(
-        "unused-indexed-id",
-        prompt_version="candidate-v2",
-        media_path=video,
-    ) == []
+    with pytest.raises(VideoPipelineError) as caught:
+        client.propose_candidates(
+            "unused-indexed-id",
+            prompt_version="candidate-v2",
+            media_path=video,
+        )
+    assert caught.value.code == "reka_output_invalid"
 
 
 @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
@@ -1291,7 +1666,9 @@ def test_short_video_candidate_truncation_is_repaired_then_classified(
         (VideoPipelineError("reka_rate_limited", "limited", retryable=True), "retry"),
     ],
 )
-def test_reka_failures_are_classified_without_payloads(tmp_path: Path, error: VideoPipelineError, expected_state: str) -> None:
+def test_reka_failures_are_classified_without_payloads(
+    tmp_path: Path, error: VideoPipelineError, expected_state: str
+) -> None:
     restricted, _, store, provider, service = setup(tmp_path)
     asset = accept(service, mp4(restricted / "clip.mp4"))
     provider.operation_errors["upload"] = error
@@ -1326,9 +1703,13 @@ def test_measured_coverage_and_retention(tmp_path: Path) -> None:
     assert coverage["coverage_ratio"] == 0.75
     with pytest.raises(VideoPipelineError):
         service.record_coverage(
-            tenant_id=TENANT_A, source_id=SOURCE_A,
-            interval_start="2026-01-01T00:00:00Z", interval_end="2026-01-01T00:10:00Z",
-            connected_seconds=400, processable_seconds=500, detector_available_seconds=300,
+            tenant_id=TENANT_A,
+            source_id=SOURCE_A,
+            interval_start="2026-01-01T00:00:00Z",
+            interval_end="2026-01-01T00:10:00Z",
+            connected_seconds=400,
+            processable_seconds=500,
+            detector_available_seconds=300,
         )
     path = mp4(restricted / "expire.mp4")
     asset = accept(service, path, received_at="2025-01-01T00:00:00Z")

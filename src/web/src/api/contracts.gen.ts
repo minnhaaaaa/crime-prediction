@@ -124,7 +124,7 @@ export interface ProbabilityEstimate {
  * A machine-generated candidate safety incident requiring human review. It is not a confirmed crime or forecast.
  */
 export interface RestrictedCandidateDetection {
-  schema_version: "1.0.0";
+  schema_version: "1.1.0";
   tenant_id: string;
   detection_id: string;
   source_id: string;
@@ -132,6 +132,8 @@ export interface RestrictedCandidateDetection {
   occurred_at: string;
   received_at: string;
   proposed_category: "property" | "violence" | "public_order" | "traffic_safety" | "other" | "unmapped";
+  event_type: string;
+  description: string;
   confidence: number;
   detector_version: string;
   evidence_ref: string;

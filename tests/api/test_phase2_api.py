@@ -520,6 +520,18 @@ def test_live_cctv_metadata_is_authenticated_fixed_and_secret_free(client):
     assert "reka" not in body.get("playback_url", "").lower()
 
 
+def test_near_live_capture_rejects_every_non_allowlisted_source_key(client):
+    response = client.post(
+        "/v1/demo/near-live-cctv/captures",
+        json={
+            "source_key": "https://attacker.example/live.m3u8",
+            "duration_seconds": 10,
+        },
+        headers={**ONE, "Idempotency-Key": "non-allowlisted-hls-source"},
+    )
+    assert response.status_code == 422
+
+
 def test_candidate_evidence_requires_reviewer_before_lookup(client):
     response = client.get(
         "/v1/candidate-detections/00000000-0000-4000-8000-000000000000/evidence",

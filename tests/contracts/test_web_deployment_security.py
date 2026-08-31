@@ -74,6 +74,8 @@ def test_aws_proxy_allows_same_origin_camera_and_bounds_uploads() -> None:
         "TRUSTED_HOSTS: localhost,127.0.0.1,${TRUSTED_HOSTS:?Set TRUSTED_HOSTS}"
         in compose
     )
+    assert "PUBLIC_HLS_DEMO_ENABLED: ${PUBLIC_HLS_DEMO_ENABLED:-true}" in compose
+    assert "PUBLIC_HLS_DEMO_ENABLED=true" in environment
     assert "WEB_BIND_ADDRESS=0.0.0.0" in environment
 
 

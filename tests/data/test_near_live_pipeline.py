@@ -142,7 +142,13 @@ def test_allowlisted_hls_capture_reaches_validated_human_review(tmp_path: Path) 
     ingestion = IngestionStore(tmp_path / "restricted.sqlite3")
     video_store = VideoStore(ingestion)
     vision = FakeRekaVisionProvider(
-        proposals=[{"offset_seconds": 3, "category": "traffic_safety", "confidence": 0.7}]
+        proposals=[{
+            "offset_seconds": 3,
+            "category": "traffic_safety",
+            "event_type": "vehicle_collision",
+            "description": "Two vehicles visibly collide.",
+            "confidence": 0.7,
+        }]
     )
     resolver = DictLocationResolver(
         {(DEMO_TENANT_ONE, DEMO_HLS_LOCATION_REF): {"latitude": 32.46, "longitude": -93.83}}
@@ -201,6 +207,8 @@ def test_allowlisted_hls_capture_reaches_validated_human_review(tmp_path: Path) 
     )
     assert "evidence_ref" not in candidate
     assert candidate["record_type"] == "unconfirmed_candidate_detection"
+    assert candidate["event_type"] == "vehicle_collision"
+    assert candidate["description"] == "Two vehicles visibly collide."
 
     evidence = client.get(
         f"/v1/candidate-detections/{candidate['detection_id']}/evidence",

@@ -12,6 +12,7 @@ import {
 import { useAuth } from "../console/AuthContext";
 
 type InputMode = "live" | "upload" | "simulated";
+type PreviewState = "idle" | "connecting" | "playing" | "reconnecting" | "paused" | "error";
 
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
 const DEMO_LOCATION_ID = "30000000-0000-4000-8000-000000000001";
@@ -61,6 +62,8 @@ export default function NearLiveReview() {
   const [predictionWindow, setPredictionWindow] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [operationNote, setOperationNote] = useState<string | null>(null);
+  const [previewState, setPreviewState] = useState<PreviewState>("idle");
+  const [previewRevision, setPreviewRevision] = useState(0);
   const [demoCaptureAvailability, setDemoCaptureAvailability] = useState<
     "loading" | "enabled" | "disabled"
   >("loading");
@@ -86,6 +89,7 @@ export default function NearLiveReview() {
     setStage(0);
     setCandidates([]);
     setError(null);
+    setPreviewState("idle");
     setDemoCaptureAvailability("loading");
     void api.ready()
       .then((readiness) => {
@@ -111,25 +115,69 @@ export default function NearLiveReview() {
       || demoCaptureAvailability !== "enabled"
       || !video
       || !source?.playback_url
-    ) return;
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = source.playback_url;
-      void video.play().catch(() => undefined);
+    ) {
+      setPreviewState("idle");
       return;
     }
+    setPreviewState("connecting");
+    const markPlaying = () => setPreviewState("playing");
+    const markWaiting = () => setPreviewState((current) =>
+      current === "playing" ? "reconnecting" : current,
+    );
+    const markPaused = () => setPreviewState((current) =>
+      current === "connecting" ? "paused" : current,
+    );
+    video.addEventListener("playing", markPlaying);
+    video.addEventListener("waiting", markWaiting);
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = source.playback_url;
+      void video.play().catch(markPaused);
+      return () => {
+        video.removeEventListener("playing", markPlaying);
+        video.removeEventListener("waiting", markWaiting);
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      };
+    }
     if (!Hls.isSupported()) {
+      video.removeEventListener("playing", markPlaying);
+      video.removeEventListener("waiting", markWaiting);
+      setPreviewState("error");
       setError("This browser cannot play the HLS live feed.");
       return;
     }
     const hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 3 });
+    let recoveryAttempts = 0;
     hls.loadSource(source.playback_url);
     hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(() => undefined));
+    hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(markPaused));
     hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) setError("The public camera stream disconnected. Reload to reconnect.");
+      if (!data.fatal) return;
+      if (recoveryAttempts < 2 && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        recoveryAttempts += 1;
+        setPreviewState("reconnecting");
+        hls.startLoad();
+        return;
+      }
+      if (recoveryAttempts < 2 && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        recoveryAttempts += 1;
+        setPreviewState("reconnecting");
+        hls.recoverMediaError();
+        return;
+      }
+      setPreviewState("error");
+      setError("The public camera preview disconnected. The bounded server capture may be retried separately.");
     });
-    return () => hls.destroy();
-  }, [demoCaptureAvailability, mode, source?.playback_url]);
+    return () => {
+      video.removeEventListener("playing", markPlaying);
+      video.removeEventListener("waiting", markWaiting);
+      hls.destroy();
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
+  }, [demoCaptureAvailability, mode, previewRevision, source?.playback_url]);
 
   useEffect(() => () => {
     if (evidenceUrl) URL.revokeObjectURL(evidenceUrl);
@@ -179,17 +227,22 @@ export default function NearLiveReview() {
     return () => window.clearInterval(timer);
   }, [run?.run_id, run?.asset_id, stage, token]);
 
+  const canManageSources = session?.role === "tenant_admin" || session?.role === "platform_operator";
   const canAnalyze = source?.analysis_mode === "reka_vision";
   const demoCaptureEnabled = demoCaptureAvailability === "enabled";
+  const liveSourceAvailable = source?.status === "live" && Boolean(source.playback_url);
+  const canCaptureLive = canManageSources && canAnalyze && demoCaptureEnabled && liveSourceAvailable;
   const pipelineRunning = run?.state === "queued" || run?.state === "running" || run?.state === "retry";
   const sourceBusy = capturing || uploading || pipelineRunning;
   const liveActionLabel = sourceBusy
     ? "Analysis in progress…"
     : demoCaptureAvailability === "loading"
       ? "Checking capture policy…"
-      : demoCaptureEnabled
+      : canCaptureLive
         ? "Analyze next 12 seconds"
-        : "Public demo capture disabled";
+        : demoCaptureEnabled && source?.status === "unavailable"
+          ? "Public camera unavailable"
+          : "Public demo capture disabled";
   const simulationActionLabel = sourceBusy
     ? "Analysis in progress…"
     : demoCaptureAvailability === "loading"
@@ -233,14 +286,18 @@ export default function NearLiveReview() {
   }
 
   async function startCapture() {
-    if (!demoCaptureEnabled) {
+    if (!canManageSources) {
+      setError("Tenant administrator access is required to start a live capture.");
+      return;
+    }
+    if (!demoCaptureEnabled || !source || source.status !== "live") {
       setError("Public demonstration capture is disabled in production. Use an authorized upload or mobile clip.");
       return;
     }
     beginRun();
     setCapturing(true);
     try {
-      const next = await api.startNearLiveCapture(token, 12);
+      const next = await api.startNearLiveCapture(token, source.source_key, 12);
       setRun(next);
       setStage(1);
     } catch (caught) {
@@ -463,7 +520,64 @@ export default function NearLiveReview() {
       </div>
 
       <div className="operations-grid">
-        {mode === "live" && <article className="live-monitor"><div className="monitor-label"><i /> LIVE · {source?.name ?? "Checking camera policy…"}</div>{demoCaptureEnabled ? <video ref={videoRef} muted controls playsInline aria-label="Live public traffic camera" /> : <div className="upload-empty" role="status"><span>OFF</span><b>{demoCaptureAvailability === "loading" ? "Checking production capture policy" : "Public demo camera disabled in production"}</b></div>}<div className="monitor-footer"><span>{source?.attribution ?? "Approved public traffic source"}</span><span>{demoCaptureEnabled ? "Bounded 12-second capture" : "Use authorized upload or mobile capture"}</span></div></article>}
+        {mode === "live" && (
+          <article className="live-monitor" aria-labelledby="public-camera-name">
+            <div className={`monitor-label ${liveSourceAvailable ? "is-live" : "is-offline"}`}>
+              <i /> {liveSourceAvailable ? "PUBLIC FEED" : "FEED OFFLINE"} · <span id="public-camera-name">{source?.name ?? "Checking camera policy…"}</span>
+            </div>
+            {demoCaptureEnabled && source && liveSourceAvailable ? (
+              <>
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  muted
+                  controls
+                  playsInline
+                  aria-label={`Live public camera preview: ${source.name}`}
+                  aria-describedby="public-camera-attribution public-camera-boundary"
+                />
+                <div className="preview-state" role="status" aria-live="polite">
+                  <span className={`preview-state-dot ${previewState}`} />
+                  {previewState === "playing"
+                    ? "Preview connected"
+                    : previewState === "reconnecting"
+                      ? "Reconnecting preview…"
+                      : previewState === "paused"
+                        ? "Preview ready — press play"
+                        : previewState === "error"
+                          ? "Preview unavailable"
+                          : "Connecting preview…"}
+                  {previewState === "error" && (
+                    <button type="button" onClick={() => { setError(null); setPreviewRevision((value) => value + 1); }}>
+                      Retry preview
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="upload-empty" role="status">
+                <span>OFF</span>
+                <b>{demoCaptureAvailability === "loading" ? "Checking production capture policy" : "Public demo camera disabled in production"}</b>
+              </div>
+            )}
+            <div className="public-source-facts" aria-label="Public camera details">
+              <div><span>Source</span><strong>{source?.name ?? "Loading…"}</strong></div>
+              <div><span>Feed state</span><strong>{source?.status ?? "checking"}</strong></div>
+              <div><span>Analysis</span><strong>{canAnalyze ? "Reka Vision" : "unavailable"}</strong></div>
+              <div><span>Capture bound</span><strong>12 seconds</strong></div>
+            </div>
+            {source?.limitations?.length ? (
+              <details className="public-source-limitations">
+                <summary>Feed limitations</summary>
+                <ul>{source.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>
+              </details>
+            ) : null}
+            <div className="monitor-footer">
+              <span id="public-camera-attribution">{source?.attribution ?? "Approved public traffic source"}</span>
+              <span id="public-camera-boundary">Preview is context; only a bounded clip enters analysis</span>
+            </div>
+          </article>
+        )}
 
         {mode === "upload" && <article className="media-intake-panel"><div className="monitor-label">RECORDED · TENANT AUTHORIZATION REQUIRED</div>{uploadPreview ? <video src={uploadPreview} controls muted playsInline aria-label="Selected video preview" /> : <div className="upload-empty" aria-hidden="true"><span>MP4</span><b>No recording selected</b></div>}<div className="intake-fields"><label className="file-drop compact"><input type="file" accept="video/mp4,.mp4" onChange={(event) => void selectUploadFile(event.target.files?.[0] ?? null)} />{uploadFile ? `${uploadFile.name} · ${uploadDuration?.toFixed(1)}s · ${(uploadFile.size / 1_048_576).toFixed(1)} MB` : "Choose MP4 · up to 64 MB"}</label><label>Source label<input value={uploadSourceName} maxLength={120} onChange={(event) => setUploadSourceName(event.target.value)} /></label><label className="authorization-check"><input type="checkbox" checked={uploadConsent} onChange={(event) => setUploadConsent(event.target.checked)} /><span>I confirm this tenant is authorized to process this recording.</span></label></div></article>}
 
@@ -471,7 +585,7 @@ export default function NearLiveReview() {
 
         <aside className="evidence-rail">
           <p className="eyebrow">Current operation</p><h2>{statusText}</h2><p>Durable worker path. Inputs remain restricted and tenant-scoped.</p>{run && <code>run {run.run_id.slice(0, 8)}</code>}
-          {mode === "live" && <><button className="capture-button" type="button" onClick={startCapture} disabled={sourceBusy || !canAnalyze || !demoCaptureEnabled}>{liveActionLabel}</button><details className="connector-config"><summary>Register tenant camera connector</summary><p>{demoCaptureEnabled ? "Reference a credential already stored by your deployment. Raw URLs and secrets never enter this browser." : "Registration stores only the tenant-scoped connector reference. Capture stays off until a pinned media proxy and worker are deployed."}</p><label>Source name<input value={connectorName} maxLength={120} onChange={(event) => setConnectorName(event.target.value)} /></label><label>Transport<select value={connectorTransport} onChange={(event) => setConnectorTransport(event.target.value as "hls" | "rtsp" | "onvif")}><option value="rtsp">RTSP</option><option value="onvif">ONVIF</option><option value="hls">HLS</option></select></label><label>Connection secret ID<input value={connectorSecretId} placeholder="00000000-0000-4000-8000-000000000000" onChange={(event) => setConnectorSecretId(event.target.value)} /></label><button className="review-action evidence" type="button" disabled={connecting || !UUID_PATTERN.test(connectorSecretId) || !connectorName.trim()} onClick={connectLiveSource}>{connecting ? "Registering…" : "Register connector"}</button></details>{registeredSources.filter((item) => item.mode === "live_camera").length > 0 && <small className="source-count">{registeredSources.filter((item) => item.mode === "live_camera").length} live source(s) registered</small>}</>}
+          {mode === "live" && <><button className="capture-button" type="button" onClick={startCapture} disabled={sourceBusy || !canCaptureLive}>{liveActionLabel}</button><details className="connector-config"><summary>Register tenant camera connector</summary><p>{demoCaptureEnabled ? "Reference a credential already stored by your deployment. Raw URLs and secrets never enter this browser." : "Registration stores only the tenant-scoped connector reference. Capture stays off until a pinned media proxy and worker are deployed."}</p><label>Source name<input value={connectorName} maxLength={120} onChange={(event) => setConnectorName(event.target.value)} /></label><label>Transport<select value={connectorTransport} onChange={(event) => setConnectorTransport(event.target.value as "hls" | "rtsp" | "onvif")}><option value="rtsp">RTSP</option><option value="onvif">ONVIF</option><option value="hls">HLS</option></select></label><label>Connection secret ID<input value={connectorSecretId} placeholder="00000000-0000-4000-8000-000000000000" onChange={(event) => setConnectorSecretId(event.target.value)} /></label><button className="review-action evidence" type="button" disabled={connecting || !UUID_PATTERN.test(connectorSecretId) || !connectorName.trim()} onClick={connectLiveSource}>{connecting ? "Registering…" : "Register connector"}</button></details>{registeredSources.filter((item) => item.mode === "live_camera").length > 0 && <small className="source-count">{registeredSources.filter((item) => item.mode === "live_camera").length} live source(s) registered</small>}</>}
           {mode === "upload" && <button className="capture-button" type="button" onClick={startUpload} disabled={sourceBusy || !canAnalyze || !uploadFile || !uploadDuration || !uploadConsent || !uploadSourceName.trim()}>{uploading || pipelineRunning ? "Analysis in progress…" : "Upload & analyze video"}</button>}
           {mode === "simulated" && <><button className="capture-button" type="button" onClick={startSimulation} disabled={sourceBusy || !canAnalyze || !demoCaptureEnabled}>{simulationActionLabel}</button><p className="simulation-note">Simulation validates transport and review mechanics. It is not evidence of model accuracy.</p></>}
           {mode !== "upload" && demoCaptureAvailability === "disabled" && <div className="pipeline-notice warning">Production capture is closed on this host. The authorized MP4 and mobile-camera paths remain available.</div>}
@@ -486,7 +600,36 @@ export default function NearLiveReview() {
       <div className="candidate-list">
         {stage >= 4 && candidates.length === 0 && <div className="candidate-empty">Analysis complete. Reka proposed no qualifying incident in this segment.</div>}
         {stage < 4 && <div className="candidate-empty">Candidates appear after analysis.</div>}
-        {candidates.map((candidate) => <motion.article className="candidate-row" key={candidate.detection_id} layout><div className="candidate-primary"><span className="candidate-flag">Unconfirmed · human decision required</span><h3>{candidate.proposed_category.replaceAll("_", " ")}</h3><p>{new Date(candidate.occurred_at).toUTCString()}</p></div><div className="candidate-confidence"><span>Model confidence</span><strong>{Math.round(candidate.confidence * 100)}%</strong><small>Not probability of crime</small></div><div className="candidate-actions"><button type="button" className="review-action evidence" onClick={() => playEvidence(candidate)}>{evidenceFor === candidate.detection_id ? "Replay evidence" : "View evidence"}</button>{candidate.review_status === "awaiting_review" ? <><button type="button" className="review-action reject" disabled={Boolean(busyCandidate)} onClick={() => decide(candidate, "rejected")}>Reject</button><button type="button" className="review-action confirm" disabled={Boolean(busyCandidate)} onClick={() => decide(candidate, "confirmed")}>Confirm &amp; predict</button></> : <span className={`decision ${candidate.review_status}`}>Final: {candidate.review_status}</span>}</div></motion.article>)}
+        {candidates.map((candidate) => (
+          <motion.article className="candidate-row" key={candidate.detection_id} layout>
+            <div className="candidate-primary">
+              <span className="candidate-flag">Unconfirmed · human decision required</span>
+              <h3>{candidate.event_type.replaceAll("_", " ")}</h3>
+              <p>{candidate.description}</p>
+              <small>
+                {candidate.proposed_category.replaceAll("_", " ")} · {new Date(candidate.occurred_at).toUTCString()}
+              </small>
+            </div>
+            <div className="candidate-confidence">
+              <span>Reka observation confidence</span>
+              <strong>{Math.round(candidate.confidence * 100)}%</strong>
+              <small>Not probability of crime</small>
+            </div>
+            <div className="candidate-actions">
+              <button type="button" className="review-action evidence" onClick={() => playEvidence(candidate)}>
+                {evidenceFor === candidate.detection_id ? "Replay evidence" : "View evidence"}
+              </button>
+              {candidate.review_status === "awaiting_review" ? (
+                <>
+                  <button type="button" className="review-action reject" disabled={Boolean(busyCandidate)} onClick={() => decide(candidate, "rejected")}>Reject</button>
+                  <button type="button" className="review-action confirm" disabled={Boolean(busyCandidate)} onClick={() => decide(candidate, "confirmed")}>Confirm &amp; predict</button>
+                </>
+              ) : (
+                <span className={`decision ${candidate.review_status}`}>Final: {candidate.review_status}</span>
+              )}
+            </div>
+          </motion.article>
+        ))}
       </div>
       {predictionWindow && <div className="prediction-unlocked"><div><span>Future window published</span><strong>{new Date(predictionWindow).toUTCString()}</strong></div><a href="#/console/map">Open updated crime-prediction map →</a></div>}
       <p className="review-limitation">Aggregate risk only · human confirmation required.</p>

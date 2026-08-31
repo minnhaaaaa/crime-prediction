@@ -99,7 +99,7 @@ detector accuracy or real-world performance.
 |---|---|---|
 | Media/source | tenant-approved footage, Reka video ID, secret refs, exact registered location | public API, logs, model artifacts |
 | Reka Vision | approved video, non-identifying analysis prompt, tenant-scoped opaque video mapping | credentials, coordinates, event IDs, identity lists, cross-tenant context |
-| Detection/review | expiring evidence, proposed category, Reka confidence, reviewer decision | forecast API, cross-tenant access |
+| Detection/review | expiring evidence, proposed category, concrete visible event type, bounded Reka observation, confidence, reviewer decision | forecast API, cross-tenant access |
 | Incident ingestion | event ID, UTC time, coordinates, category | downstream raw coordinates/IDs |
 | Aggregate features | H3 cell, time, category, counts, measured coverage | individual records or identity |
 | Forecast API | aggregate estimates, uncertainty, coverage, versions, suppression | secret refs, raw events, candidates |
